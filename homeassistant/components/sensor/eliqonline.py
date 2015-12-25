@@ -52,6 +52,10 @@ class EliqSensor(Entity):
     def name(self):
         """ Returns the name. """
         return self._name
+        
+    @property
+    def icon(self):
+        return "mdi:speedometer"
 
     @property
     def unit_of_measurement(self):
