@@ -76,6 +76,9 @@ dnspython3==1.14.0
 # homeassistant.components.sensor.dweet
 dweepy==0.2.0
 
+# homeassistant.components.ec3k
+ec3k
+
 # homeassistant.components.sensor.eliqonline
 eliqonline==1.0.12
 
