@@ -1,5 +1,4 @@
-"""
-Support for EnergyCount 3000 Energy loggers.
+"""Support for EnergyCount 3000 Energy loggers.
 
 For more details about this component, please refer to the documentation at
 https://home-assistant.io/components/ec3k/
@@ -17,11 +16,20 @@ Relevant Links
   https://batilanblog.wordpress.com/2015/02/17/using-ec3k-with-raspberry-pi/
 - Helper frequency scanner script
   https://github.com/molobrakos/ec3kscan
+
+A bit hackish due to the fact that ec3k is Python 2-only (because
+using Gnu Radio), and that the ec3k-package contains scripts
+(ec3k_recv, capture.py), which HA won't install
 """
 import logging
+import os
+import threading
+import subprocess
 from functools import partial
 from collections import defaultdict
+import voluptuous as vol
 
+import homeassistant.helpers.config_validation as cv
 from homeassistant.const import (ATTR_DISCOVERED,
                                  ATTR_SERVICE,
                                  EVENT_PLATFORM_DISCOVERED,
@@ -30,95 +38,60 @@ from homeassistant.const import (ATTR_DISCOVERED,
 _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "ec3k"
-REQUIREMENTS = ['ec3k']
-DEPENDENCIES = ['sensor', 'binary_sensor']
-
-DISCOVER_SENSORS = "ec3k.sensors"
-DISCOVER_BINARY_SENSORS = "ec3k.binary_sensors"
 
 CONF_FREQUENCY = "frequency"
-DEFAULT_FREQUENCY = 868.202  # MHz
+DEFAULT_FREQUENCY = 868.202
 
-#  global state { id: [ sensors ] }
 SENSORS = defaultdict(list)
-
-#  global state { id: current_state }
 STATES = {}
 
-EC3K_RECEIVER = None
+CONFIG_SCHEMA = vol.Schema({
+    DOMAIN: vol.Schema({
+        vol.Optional(CONF_FREQUENCY, default=DEFAULT_FREQUENCY): vol.Coerce(float)
+    }),
+}, extra=vol.ALLOW_EXTRA)
 
-
-def ec3k_callback(hass, config, state):
-    """Called by the ec3k package when new signal is detected."""
-    _LOGGER.debug("received ec3k signal from %04x", state.id)
-
-    known_id = state.id in STATES
-    STATES[state.id] = state
-
-    if known_id:
-        for sensor in SENSORS[state.id]:
-            sensor.update_ha_state()
-    else:
-        _LOGGER.info("New ec3k device %04x detected", state.id)
-        hass.bus.fire(EVENT_PLATFORM_DISCOVERED,
-                      {ATTR_SERVICE: DISCOVER_SENSORS,
-                       ATTR_DISCOVERED: state.id})
-        hass.bus.fire(EVENT_PLATFORM_DISCOVERED,
-                      {ATTR_SERVICE: DISCOVER_BINARY_SENSORS,
-                       ATTR_DISCOVERED: state.id})
-
-
-def mock_listen(callback):
-    """Fake some receivers. Useful for developing on """
-    from random import choice, randint
-    from time import sleep
-    from types import SimpleNamespace
-    ids = [42, 4711]
-    _LOGGER.info("Faking ec3k events")
-    while True:
-        sleep(1)
-        _LOGGER.info("Faking ec3k state change")
-        callback(SimpleNamespace(
-            id=choice(ids),
-            device_on_flag=randint(0, 1),
-            time_total=0,
-            time_on=0,
-            energy=randint(1e6, 1e8),
-            power_current=randint(0, 1e3),
-            power_max=0,
-            reset_counter=0))
-
+def which(program, required=True):
+    for path in os.environ["PATH"].split(os.pathsep):
+        fpath = os.path.join(path, program)
+        if os.path.isfile(fpath) and os.access(fpath, os.X_OK):
+            _LOGGER.info("Found %s: %s", program, fpath)
+            return fpath
+    [_LOGGER.warning, _LOGGER.error][required]\
+        ("%s not found in path", program)
 
 def setup(hass, config):
     """Set up the Ec3k sensors."""
-    hass.bus.listen_once(EVENT_HOMEASSISTANT_STOP, shutdown)
+    frequency = config[DOMAIN].get(CONF_FREQUENCY)
+    _LOGGER.info("Using frequency %3.3f MHz", frequency)
 
-    callback = partial(ec3k_callback, hass, config)
-    frequency = config.get(CONF_FREQUENCY, DEFAULT_FREQUENCY)
-    _LOGGER.info("Using frequency %3.3f MHz for ec3k loggers", frequency)
-
-    if config[DOMAIN].get("mock"):
-        from threading import Thread
-        Thread(target=lambda: mock_listen(callback)).start()
-        return True
-
-    try:
-        import ec3k
-        global EC3K_RECEIVER
-        EC3K_RECEIVER = ec3k.EnergyCount(callback=callback,
-                                         frequency=frequency * 1e6)
-        EC3K_RECEIVER._log = _LOGGER.log#lambda self, msg: _LOGGER.log(msg)
-        EC3K_RECEIVER.start()
-        return True
-    except (ImportError, SyntaxError):
-        _LOGGER.error("failed to initialize ec3k module")
+    py2 = which("python2")
+    receiver = which("ec3k_recv")
+    if not py2 or not receiver:
         return False
 
+    if not which("capture", required=False):
+        if not which("capture.py"):
+            return False
+        else:
+            _LOGGER.warning("Using capture.py. "
+                            "Consider installing the faster C-implementation ")
 
-def shutdown(event):
-    """Shutdown the platform."""
-    _LOGGER.debug("shutting down platform")
-    if EC3K_RECEIVER:
-        _LOGGER.debug("stopping ec3k receiver")
-        EC3K_RECEIVER.stop()
-        _LOGGER.debug("ec3k receiver stopped")
+    def run():
+        _LOGGER.debug("receiver thread started")
+        args = [ py2, "-u", receiver, "--json", "--quiet" ]
+        with subprocess.Popen(args, shell=False, 
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT) as proc:
+            _LOGGER.debug("process started: %s", proc)
+            for line in proc.stdout:
+                _LOGGER.debug("got %s", line)
+
+    threading.Thread(target=run).start()
+
+    def shutdown(event):
+        """Shutdown the platform."""
+        _LOGGER.debug("shutting down platform")
+
+    hass.bus.listen_once(EVENT_HOMEASSISTANT_STOP, shutdown)
+    return True
