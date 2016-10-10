@@ -9,17 +9,16 @@ framework together with the ec3k python module.
 
 Relevant Links
 - Package
-  https://pypi.python.org/pypi/ec3k/
-- Package source
   https://github.com/avian2/ec3k
 - Raspberry Pi setup:
   https://batilanblog.wordpress.com/2015/02/17/using-ec3k-with-raspberry-pi/
 - Helper frequency scanner script
   https://github.com/molobrakos/ec3kscan
 
-A bit hackish due to the fact that ec3k is Python 2-only (because
-using Gnu Radio), and that the ec3k-package contains scripts
-(ec3k_recv, capture.py), which HA won't install
+Due to the fact that the ec3k package depends on GNU Radio, which is
+Python2-only, a Python2 environment with the ec3k package installed
+has to be manually setup.
+
 """
 import logging
 import os
@@ -78,14 +77,14 @@ def setup(hass, config):
                             "Consider installing the faster C-implementation ")
 
     def run():
-        _LOGGER.debug("receiver thread started")
+        _LOGGER.debug("Receiver thread started")
         args = [ py2, "-u", receiver, "--json", "--quiet" ]
         with subprocess.Popen(args, shell=False, 
                               stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT) as proc:
-            _LOGGER.debug("process started: %s", proc)
+            _LOGGER.debug("Subprocess started")
             for line in proc.stdout:
-                _LOGGER.debug("got %s", line)
+                _LOGGER.debug(line.decode('ascii'))
 
     threading.Thread(target=run).start()
 
