@@ -103,7 +103,7 @@ def setup(hass, config):
 
         dispatcher_send(hass, SIGNAL_VEHICLE_SEEN, vehicle)
 
-    def update(now):
+    def update():
         """Update status from the online service."""
         try:
             if not connection.update():
@@ -115,10 +115,10 @@ def setup(hass, config):
 
             return True
         finally:
-            track_point_in_utc_time(hass, update, utcnow() + interval)
+            call_later(hass, interval, update)
 
     _LOGGER.info("Logging in to service")
-    return update(utcnow())
+    return update()
 
 
 class VolvoData:

@@ -221,14 +221,13 @@ class TelldusLiveClient(object):
         _LOGGER.debug('Update interval %s', self._interval)
         self._client = session
 
-    def update(self, *args):
+    def update(self):
         """Periodically poll the servers for current state."""
         _LOGGER.debug('Updating')
         try:
             self._sync()
         finally:
-            track_point_in_utc_time(
-                self._hass, self.update, utcnow() + self._interval)
+            call_later(self._hass, self._interval, self.update)
 
     def _sync(self):
         """Update local list of devices."""
