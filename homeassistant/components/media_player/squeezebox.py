@@ -8,6 +8,7 @@ import logging
 import asyncio
 import urllib.parse
 import json
+from datetime import timedelta
 import aiohttp
 import async_timeout
 
@@ -25,11 +26,13 @@ from homeassistant.const import (
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util.dt import utcnow
+from homeassistant.helpers.event import async_call_later
 
 _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_PORT = 9000
-TIMEOUT = 10
+TIMEOUT = timedelta(seconds=10)
+PLAYERS_DISCOVERY_INTERVAL = timedelta(seconds=10)
 
 SUPPORT_SQUEEZEBOX = SUPPORT_PAUSE | SUPPORT_VOLUME_SET | \
     SUPPORT_VOLUME_MUTE | SUPPORT_PREVIOUS_TRACK | SUPPORT_NEXT_TRACK | \
@@ -105,10 +108,25 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
     _LOGGER.debug("Creating LMS object for %s", ipaddr)
     lms = LogitechMediaServer(hass, host, port, username, password)
 
-    players = yield from lms.create_players()
+    @asyncio.coroutine
+    def async_update_players(*_):
+        known_player_ids = [player.unique_id
+                            for player in hass.data[DATA_SQUEEZEBOX]]
+        try:
+            players = yield from lms.async_query_players()
+            players = [
+                SqueezeBoxDevice(lms, player['playerid'], player['name'])
+                for player in players
+                if player['playerid'] not in known_player_ids]
+            for player in players:
+                yield from player.async_update()
+            hass.data[DATA_SQUEEZEBOX].extend(players)
+            async_add_devices(players)
+        finally:
+            async_call_later(hass, PLAYERS_DISCOVERY_INTERVAL.seconds,
+                             async_update_players)
 
-    hass.data[DATA_SQUEEZEBOX].extend(players)
-    async_add_devices(players)
+    yield from async_update_players()
 
     @asyncio.coroutine
     def async_service_handler(service):
@@ -155,18 +173,10 @@ class LogitechMediaServer(object):
         self._password = password
 
     @asyncio.coroutine
-    def create_players(self):
+    def async_query_players(self):
         """Create a list of devices connected to LMS."""
-        result = []
-        data = yield from self.async_query('players', 'status')
-        if data is False:
-            return result
-        for players in data.get('players_loop', []):
-            player = SqueezeBoxDevice(
-                self, players['playerid'], players['name'])
-            yield from player.async_update()
-            result.append(player)
-        return result
+        data = yield from self.async_query('players', 'status') or []
+        return data.get('players_loop', [])
 
     @asyncio.coroutine
     def async_query(self, *command, player=""):
@@ -185,7 +195,7 @@ class LogitechMediaServer(object):
 
         try:
             websession = async_get_clientsession(self.hass)
-            with async_timeout.timeout(TIMEOUT, loop=self.hass.loop):
+            with async_timeout.timeout(TIMEOUT.seconds, loop=self.hass.loop):
                 response = yield from websession.post(
                     url,
                     data=data,
@@ -221,6 +231,7 @@ class SqueezeBoxDevice(MediaPlayerDevice):
         self._status = {}
         self._name = name
         self._last_update = None
+        self._available = False
         _LOGGER.debug("Creating SqueezeBox object: %s, %s", name, player_id)
 
     @property
@@ -247,6 +258,10 @@ class SqueezeBoxDevice(MediaPlayerDevice):
                 return STATE_IDLE
         return STATE_UNKNOWN
 
+    @property
+    def available(self):
+        return self._available
+
     def async_query(self, *parameters):
         """Send a command to the LMS.
 
@@ -262,6 +277,8 @@ class SqueezeBoxDevice(MediaPlayerDevice):
         response = yield from self.async_query(
             "status", "-", "1", "tags:{tags}"
             .format(tags=tags))
+
+        self._available = response is not False
 
         if response is False:
             return
